@@ -1,0 +1,50 @@
+# MLproject file for defining project entry points
+
+name: sales_demand_forecasting_mlops
+
+# Define required environment (e.g., Conda or Pip)
+# Ensure your requirements.txt is up-to-date with all dependencies
+conda_env: conda.yaml # Assuming you can generate a conda.yaml or use pip_env
+# OR use pip_env
+# pip_env: requirements.txt
+
+entry_points:
+  # Entry point for data preprocessing
+  preprocess:
+    command: "python src/data_preprocessing.py {raw_data_path} {processed_data_path} {preprocessor_path}"
+    parameters:
+      raw_data_path: {type: path, default: data/synthetic/synthetic_ecommerce_data.csv}
+      processed_data_path: {type: path, default: data/processed/PreparedSalesData.csv}
+      preprocessor_path: {type: path, default: models_initial/preprocessor.pkl}
+
+  # Entry point for feature engineering and training
+  # This entry point runs the full training logic including FE and model saving
+  train:
+    command: "python src/train.py {raw_data_path} {processed_data_path} {models_output_dir} {preprocessor_path} {daily_aggregated_path}"
+    parameters:
+      raw_data_path: {type: path, default: data/synthetic/synthetic_ecommerce_data.csv}
+      processed_data_path: {type: path, default: data/processed/PreparedSalesData.csv}
+      models_output_dir: {type: path, default: models_initial}
+      preprocessor_path: {type: path, default: models_initial/preprocessor.pkl}
+      daily_aggregated_path: {type: path, default: data/processed/daily_aggregated_revenue.csv}
+
+  # Entry point for running monitoring check
+  monitor:
+     command: "python src/monitor.py --new_data_path {new_data_path} --model_path {model_path} --preprocessor_path {preprocessor_path} --baseline_metrics_path {baseline_metrics_path} --report_output_dir {report_output_dir} --alert_log_path {alert_log_path}"
+     parameters:
+       new_data_path: {type: path, default: data/processed/new_data_sample.csv} # Specify default path for new data
+       model_path: {type: path, default: models_initial/best_random_forest_revenue_model.pkl} # Default model to monitor
+       preprocessor_path: {type: path, default: models_initial/preprocessor.pkl}
+       baseline_metrics_path: {type: path, default: data/processed/baseline_metrics.json} # Default path for baseline metrics
+       report_output_dir: {type: path, default: data/processed/performance_reports}
+       alert_log_path: {type: path, default: data/processed/monitoring_alerts.log}
+
+  # Entry point to run the Flask API (for local testing/development)
+  # In production, you'd typically use Gunicorn/Waitress directly or via Docker ENTRYPOINT
+  api_serve:
+    command: "gunicorn --bind 0.0.0.0:5000 src.api.main:app" # Use Gunicorn
+    # command: "python src/api/main.py" # Use Flask development server (not for production)
+
+  # Entry point to run the Streamlit app (for local testing/development)
+  app_serve:
+    command: "streamlit run src/streamlit_app/app.py"

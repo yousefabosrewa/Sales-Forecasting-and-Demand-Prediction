@@ -1,0 +1,31 @@
+# DVC Pipeline definition
+stages:
+  # Stage 1: Data Preprocessing
+  preprocess:
+    cmd: python src/data_preprocessing.py data/synthetic/synthetic_ecommerce_data.csv data/processed/PreparedSalesData.csv models_initial/preprocessor.pkl
+    deps:
+      - src/data_preprocessing.py
+      - data/synthetic/synthetic_ecommerce_data.csv # Dependency on raw data
+    outs:
+      - data/processed/PreparedSalesData.csv # Output processed data
+      - models_initial/preprocessor.pkl      # Output fitted preprocessor (owned by this stage)
+
+  # Stage 2: Feature Engineering and Training
+  # This stage encapsulates loading processed data, adding FE, train/test split,
+  # training all models, evaluating, logging to MLflow, and saving models.
+  # It depends on the output of the preprocess stage.
+  train:
+    cmd: python src/train.py data/synthetic/synthetic_ecommerce_data.csv data/processed/PreparedSalesData.csv models_initial models_initial/preprocessor.pkl data/processed/daily_aggregated_revenue.csv
+    deps:
+      - src/train.py
+      - src/feature_engineering.py # Dependency on feature engineering logic
+      - src/evaluate.py         # Dependency on evaluation logic
+      - data/processed/PreparedSalesData.csv # Dependency on processed data (output of preprocess)
+      - models_initial/preprocessor.pkl      # Dependency on preprocessor (output of preprocess)
+      - data/synthetic/synthetic_ecommerce_data.csv # Explicit dependency on raw data for SARIMA part in train.py
+    outs:
+      - models_initial/best_random_forest_revenue_model.pkl # Output trained RF model
+      - models_initial/xgboost_revenue_model.pkl      # Output trained XGB model
+      - models_initial/sarima_revenue_model.pkl       # Output trained SARIMA model
+      - data/processed/daily_aggregated_revenue.csv   # Output daily aggregated data (used by SARIMA)
+      # REMOVED models_initial/preprocessor.pkl from outs here
