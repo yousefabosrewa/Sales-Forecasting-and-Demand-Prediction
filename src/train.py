@@ -9,11 +9,18 @@ import mlflow.statsmodels # For SARIMA
 from sklearn.ensemble import RandomForestRegressor
 import xgboost as xgb
 from statsmodels.tsa.statespace.sarimax import SARIMAX
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score  # <-- ADD THIS
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from datetime import datetime
+import pickle # Import pickle for saving the feature columns list
+import warnings # Import warnings to manage potential deprecation warnings
+from sklearn.model_selection import train_test_split # Import train_test_split for clarity if needed, though time split is used
+# Import necessary transformers if needed for manual application, but use loaded ones
+# from sklearn.preprocessing import OneHotEncoder, MinMaxScaler, FunctionTransformer
+
 
 # Import modularized functions
-from src.data_preprocessing import preprocess_data # Need to import the function itself
+# Import only preprocess_data from data_preprocessing, as it handles loading and initial cleaning
+from src.data_preprocessing import preprocess_data
 from src.feature_engineering import add_time_features, add_lag_rolling_features, aggregate_daily_revenue
 from src.evaluate import evaluate_model # Import evaluate_model function
 # from src.predict_utils import preprocess_for_prediction # Only needed for prediction, not training data prep
@@ -21,65 +28,95 @@ from src.evaluate import evaluate_model # Import evaluate_model function
 
 def train_models(
     raw_data_path,
-    processed_data_path,
+    processed_data_path, # Path where initial processed CSV (PreparedSalesData.csv) will be saved
     models_output_dir,
-    preprocessor_output_path,
-    daily_aggregated_path
+    preprocessor_output_path, # Path where the preprocessor dictionary will be saved
+    daily_aggregated_path # Path where daily aggregated data will be saved
 ):
     """
-    Runs the full training pipeline: preprocesses data, engineers features,
-    trains multiple models, tracks with MLflow, and saves models/preprocessor.
+    Runs the full training pipeline: preprocesses data (initial), aggregates data
+    for SARIMA, engineers features, applies remaining preprocessing steps manually,
+    trains multiple models, tracks with MLflow, and saves models, preprocessor
+    components, and feature columns.
     """
     # Ensure output directories exist
+    PROCESSED_DATA_DIR = os.path.dirname(processed_data_path) # Define PROCESSED_DATA_DIR here
+    DAILY_AGGREGATED_DIR = os.path.dirname(daily_aggregated_path) # Define DAILY_AGGREGATED_DIR here
+
     os.makedirs(models_output_dir, exist_ok=True)
-    os.makedirs(os.path.dirname(processed_data_path), exist_ok=True)
-    os.makedirs(os.path.dirname(preprocessor_output_path), exist_ok=True)
-    os.makedirs(os.path.dirname(daily_aggregated_path), exist_ok=True)
+    os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(preprocessor_output_path), exist_ok=True) # preprocessor_output_path is in models_output_dir
+    os.makedirs(DAILY_AGGREGATED_DIR, exist_ok=True)
 
-    # --- Data Preprocessing ---
-    # This step also saves PreparedSalesData.csv and preprocessor.pkl
+
+    # --- Data Preprocessing (Initial steps that save artifacts) ---
+    # Call preprocess_data first. This loads raw data, cleans, handles some outliers/corr,
+    # encodes Category/Region, scales some features, and saves PreparedSalesData.csv
+    # and preprocessor.pkl dictionary.
+    print("Starting initial data preprocessing (saving PreparedSalesData.csv and preprocessor.pkl)...")
     preprocess_data(raw_data_path, processed_data_path, preprocessor_output_path)
+    print("Initial data preprocessing complete. Processed data and preprocessor components saved.")
 
-    # --- Feature Engineering ---
-    print("Loading processed data for feature engineering...")
-    df_processed = pd.read_csv(processed_data_path)
-
-    # Add time features (sets date as index) - this is for RF/XGB data
-    df_features = add_time_features(df_processed)
 
     # --- Prepare data for SARIMA (daily aggregated) ---
-    # Need the original Revenue column before scaling for SARIMA aggregation
-    # Load raw data again specifically for SARIMA aggregation
-    print("Loading raw data for SARIMA aggregation...")
+    # This part uses the raw data before any preprocessing steps that might alter Revenue.
+    # Load raw data specifically for SARIMA aggregation.
+    print(f"Loading raw data from {raw_data_path} for SARIMA aggregation...")
     raw_df_for_sarima = pd.read_csv(raw_data_path)
 
-    # --- FIX: Convert to datetime and set index for SARIMA data ---
-    print("Converting 'Transaction_Date' to datetime and setting as index for SARIMA data...")
-    raw_df_for_sarima['Transaction_Date'] = pd.to_datetime(raw_df_for_sarima['Transaction_Date'])
-    raw_df_for_sarima.set_index('Transaction_Date', inplace=True)
-    raw_df_for_sarima = raw_df_for_sarima.sort_index() # Ensure sorted by date
+    print("Aggregating raw data to daily frequency for SARIMA training...")
+    # Ensure raw_df_for_sarima has DatetimeIndex before aggregating
+    if 'Transaction_Date' in raw_df_for_sarima.columns:
+        raw_df_for_sarima['Transaction_Date'] = pd.to_datetime(raw_df_for_sarima['Transaction_Date'])
+        raw_df_for_sarima.set_index('Transaction_Date', inplace=True)
+        raw_df_for_sarima = raw_df_for_sarima.sort_index() # Ensure sorted by date
+    else:
+         raise ValueError("Raw data must contain 'Transaction_Date' column for SARIMA aggregation.")
 
 
-    # Aggregate data to daily frequency for SARIMA
     daily_revenue_series = aggregate_daily_revenue(raw_df_for_sarima) # Pass the DataFrame with DatetimeIndex
+
+    # --- Save the daily aggregated data ---
+    print(f"Saving daily aggregated revenue to {daily_aggregated_path}...")
     daily_revenue_series.to_csv(daily_aggregated_path, header=['Revenue'])
-    print(f"Daily aggregated revenue saved to {daily_aggregated_path}")
+    print("Daily aggregated revenue saved.")
 
 
-    # --- Add Lag/Rolling features for RF/XGB ---
-    # Use the dataframe that already has time features and is sorted by date index
-    df_all_features = add_lag_rolling_features(df_features)
+    # --- Load Initially Processed Data for Feature Engineering ---
+    # Load the data generated by preprocess_data to add more features for transactional models
+    print(f"Loading initially processed data from {processed_data_path} for feature engineering...")
+    df_initial_processed = pd.read_csv(processed_data_path)
+    print(f"Initially processed data loaded. Shape: {df_initial_processed.shape}")
+
+    # Ensure date column is datetime and set as index for FE
+    if 'Transaction_Date' in df_initial_processed.columns:
+        df_initial_processed['Transaction_Date'] = pd.to_datetime(df_initial_processed['Transaction_Date'])
+        df_initial_processed.set_index('Transaction_Date', inplace=True)
+        df_initial_processed = df_initial_processed.sort_index() # Ensure sorted by date
+    elif not isinstance(df_initial_processed.index, pd.DatetimeIndex):
+         raise ValueError("Processed data must contain 'Transaction_Date' column or have a DatetimeIndex for feature engineering.")
+
+
+    # --- Feature Engineering (After Initial Preprocessing) ---
+    print("Applying additional feature engineering (time, lag, rolling)...")
+    # Add time-based features
+    df_engineered = add_time_features(df_initial_processed)
+
+    # Add lag and rolling window features (requires sorted data by date index)
+    df_all_features = add_lag_rolling_features(df_engineered)
 
     # Handle NAs created by lag/rolling features - drop them *after* adding features
-    # This needs to be done *before* train/test split
     print("Dropping rows with NAs created by lag/rolling features...")
     initial_na_rows = df_all_features.isnull().any(axis=1).sum()
     df_all_features.dropna(inplace=True)
+    rows_after_drop = len(df_all_features)
     print(f"Dropped {initial_na_rows} rows.")
+    print("Feature engineering complete.")
 
 
     # --- Train/Test Split ---
-    print("Performing train/test split (last 6 months as test set)...")
+    print("Performing train/test split (last 6 months as test set) on feature-engineered data...")
+    # Ensure the index is datetime for the split - already done after add_time_features
     split_date = df_all_features.index.max() - pd.DateOffset(months=6)
     train_df = df_all_features[df_all_features.index <= split_date].copy() # Use .copy() to avoid SettingWithCopyWarning
     test_df = df_all_features[df_all_features.index > split_date].copy()
@@ -98,12 +135,98 @@ def train_models(
     X_test = test_df[feature_columns]
     y_test = test_df[target_column]
 
-    # --- Save the list of feature columns used for training ---
-    # This is needed by the preprocessor for column alignment during prediction/monitoring
-    preprocessor = joblib.load(preprocessor_output_path)
-    preprocessor['feature_columns'] = feature_columns
-    joblib.dump(preprocessor, preprocessor_output_path)
-    print(f"Feature columns list saved in {preprocessor_output_path}")
+    # --- Load Preprocessor Components for Manual Transformation ---
+    # We need the fitted encoder and scaler from the dictionary saved by preprocess_data.
+    if not os.path.exists(preprocessor_output_path):
+        raise FileNotFoundError(f"Preprocessor components not found at {preprocessor_output_path}. Ensure preprocess_data runs successfully.")
+
+    print(f"Loading preprocessor components from {preprocessor_output_path} for manual transformation...")
+    preprocessor_components = joblib.load(preprocessor_output_path)
+    # Extract components from the dictionary
+    encoder = preprocessor_components.get('encoder')
+    scaler = preprocessor_components.get('scaler')
+    cat_cols_trained = preprocessor_components.get('categorical_columns', [])
+    log_cols_trained = preprocessor_components.get('log_cols', [])
+    minmax_cols_trained = preprocessor_components.get('minmax_cols', [])
+    # dropped_corr_cols_trained = preprocessor_components.get('dropped_corr_cols', []) # Not needed for transformation
+    print("Preprocessor components loaded.")
+
+
+    # --- Manually Apply Final Preprocessing Steps (Encoding if needed, Scaling) ---
+    # Note: One-hot encoding is assumed to be done by preprocess_data before saving preprocessor components.
+    # We need to apply the *fitted* scaler from the loaded preprocessor dictionary.
+    # We also need to ensure the columns match what the encoder expects if applying encoding here.
+    # Based on your preprocess_data, encoding happens *before* saving the preprocessor dict.
+    # So, X_train/X_test already have one-hot encoded columns. We only need to apply scaling.
+    print("Manually applying final preprocessing steps (scaling) to train and test data...")
+
+    # Apply log1p transformation using the list of columns from the preprocessor
+    log_cols_apply = [col for col in log_cols_trained if col in X_train.columns and pd.api.types.is_numeric_dtype(X_train[col])]
+    if log_cols_apply:
+        # Ensure values are non-negative before log1p
+        for col in log_cols_apply:
+             if (X_train[col] < 0).any():
+                  warnings.warn(f"Negative values found in X_train column '{col}'. log1p may produce NaNs. Replacing negatives with 0.")
+                  X_train[col] = X_train[col].apply(lambda x: max(0, x) if pd.notna(x) else x)
+             if (X_test[col] < 0).any():
+                  warnings.warn(f"Negative values found in X_test column '{col}'. log1p may produce NaNs. Replacing negatives with 0.")
+                  X_test[col] = X_test[col].apply(lambda x: max(0, x) if pd.notna(x) else x)
+        try:
+            X_train[log_cols_apply] = X_train[log_cols_apply].apply(np.log1p)
+            X_test[log_cols_apply] = X_test[log_cols_apply].apply(np.log1p)
+        except Exception as e:
+             raise RuntimeError(f"Error during log1p transformation: {e}")
+
+
+    # Apply fitted MinMaxScaler using the list of columns from the preprocessor
+    minmax_cols_apply = [col for col in minmax_cols_trained if col in X_train.columns and pd.api.types.is_numeric_dtype(X_train[col])]
+    if scaler and minmax_cols_apply:
+        try:
+            # Ensure data types are appropriate before scaling
+            # Filter columns that are actually in X_train/X_test and are numeric
+            cols_to_scale_train = [col for col in minmax_cols_apply if col in X_train.columns and pd.api.types.is_numeric_dtype(X_train[col])]
+            cols_to_scale_test = [col for col in minmax_cols_apply if col in X_test.columns and pd.api.types.is_numeric_dtype(X_test[col])]
+
+            if cols_to_scale_train:
+                 # Ensure the order of columns for scaling is consistent with fitting
+                 # The minmax_cols_trained list from the preprocessor should define this order
+                 cols_in_fitting_order = [col for col in minmax_cols_trained if col in cols_to_scale_train]
+                 if cols_in_fitting_order:
+                      X_train[cols_in_fitting_order] = scaler.transform(X_train[cols_in_fitting_order])
+                      # Apply to test set, ensuring columns are present
+                      cols_in_fitting_order_test = [col for col in minmax_cols_trained if col in cols_to_scale_test]
+                      if cols_in_fitting_order_test:
+                           X_test[cols_in_fitting_order_test] = scaler.transform(X_test[cols_in_fitting_order_test])
+
+
+        except Exception as e:
+            raise RuntimeError(f"Error during minmax scaling transform: {e}")
+
+    print("Final preprocessing steps applied.")
+
+
+    # --- Get the final feature names after all transformations ---
+    # The feature names are now the columns of X_train/X_test after manual transformations.
+    # One-hot encoding was done by preprocess_data, adding columns like 'Category_Electronics'.
+    # Time/Lag/Rolling features were added after loading processed data.
+    # Log1p and MinMax scaling were applied to existing columns.
+    # The final columns are simply the current columns of X_train.
+    final_feature_names = X_train.columns.tolist()
+    print(f"Obtained {len(final_feature_names)} final feature names after all transformations.")
+
+
+    # --- Save the list of final feature columns ---
+    # This is needed by the prediction utility functions and API
+    FEATURE_COLUMNS_PATH = os.path.join(models_output_dir, 'feature_columns.pkl') # Ensure path is correct
+    print(f"Saving final feature columns list to {FEATURE_COLUMNS_PATH}...")
+    try:
+        with open(FEATURE_COLUMNS_PATH, 'wb') as f:
+            pickle.dump(list(final_feature_names), f) # Save as a list using pickle
+        print("Final feature columns list saved.")
+        mlflow.log_artifact(FEATURE_COLUMNS_PATH) # Log feature columns as an artifact
+    except Exception as e:
+         print(f"Error saving feature columns list: {e}")
+         # Decide if this should be a critical error or just a warning
 
 
     # --- Train Models with MLflow ---
@@ -117,18 +240,23 @@ def train_models(
         mlflow.log_param("train_end_date", train_df.index.max().strftime('%Y-%m-%d'))
         mlflow.log_param("test_start_date", test_df.index.min().strftime('%Y-%m-%d'))
         mlflow.log_param("test_end_date", test_df.index.max().strftime('%Y-%m-%d'))
-        mlflow.log_param("features_count", len(feature_columns))
-        mlflow.log_param("feature_list", feature_columns) # Log the full list
+        mlflow.log_param("original_features_count", len(feature_columns)) # Log original feature count (before manual scaling)
+        mlflow.log_param("final_features_count", len(final_feature_names)) # Log final feature count
+        # Log the full list of final features as a parameter or artifact
+        mlflow.log_param("final_feature_list", list(final_feature_names))
+
 
         # --- Random Forest ---
         print("Training Random Forest model...")
         rf_params = {'n_estimators': 100, 'random_state': 42}
         mlflow.log_params({f"rf_{k}": v for k, v in rf_params.items()})
         rf_model = RandomForestRegressor(**rf_params)
+        # Train RF model on the *manually processed* training data (X_train)
         rf_model.fit(X_train, y_train)
 
         # Evaluate RF
         print("Evaluating Random Forest model...")
+        # Evaluate RF on the *manually processed* test data (X_test)
         rf_metrics, rf_predictions = evaluate_model(rf_model, X_test, y_test)
         mlflow.log_metrics({f"rf_test_{k}": v for k, v in rf_metrics.items()})
 
@@ -145,10 +273,12 @@ def train_models(
         xgb_params = {'n_estimators': 100, 'learning_rate': 0.1, 'random_state': 42}
         mlflow.log_params({f"xgb_{k}": v for k, v in xgb_params.items()})
         xgb_model = xgb.XGBRegressor(**xgb_params)
+        # Train XGBoost model on the *manually processed* training data (X_train)
         xgb_model.fit(X_train, y_train)
 
         # Evaluate XGBoost
         print("Evaluating XGBoost model...")
+        # Evaluate XGBoost on the *manually processed* test data (X_test)
         xgb_metrics, xgb_predictions = evaluate_model(xgb_model, X_test, y_test)
         mlflow.log_metrics({f"xgb_test_{k}": v for k, v in xgb_metrics.items()})
 
@@ -162,7 +292,7 @@ def train_models(
 
         # --- SARIMA ---
         print("Training SARIMA model...")
-        # SARIMA uses the daily aggregated data
+        # SARIMA uses the daily aggregated data loaded/generated earlier
         # Need to split the daily aggregated data based on the same time split
         # Use the index from the test_df (which has the correct split date) to find the split point
         sarima_train = daily_revenue_series[daily_revenue_series.index <= split_date]
@@ -178,6 +308,8 @@ def train_models(
         })
 
         try:
+            # Ensure SARIMAX is imported from statsmodels.tsa.statespace.sarimax
+            from statsmodels.tsa.statespace.sarimax import SARIMAX
             sarima_model = SARIMAX(sarima_train,
                                    order=sarima_order,
                                    seasonal_order=seasonal_order,
@@ -203,11 +335,11 @@ def train_models(
             mlflow.log_metrics({f"sarima_test_{k}": v for k, v in sarima_metrics.items()})
 
             # Log SARIMA model artifact
-            mlflow.statsmodels.log_model(sarima_results, "sarima_model")
-
             # Save SARIMA model as pkl (joblib might work for statsmodels results)
             sarima_model_path = os.path.join(models_output_dir, 'sarima_revenue_model.pkl')
             joblib.dump(sarima_results, sarima_model_path)
+            mlflow.statsmodels.log_model(sarima_results, "sarima_model") # Log after saving the file
+
             print(f"SARIMA model saved to {sarima_model_path}")
 
         except Exception as e:
@@ -238,7 +370,9 @@ def train_models(
 
 
         print("MLflow run completed.")
-        print(f"MLflow tracking UI available at http://localhost:5000 (if running mlflow ui)")
+        print(f"Models and preprocessor saved to {models_output_dir}") # Use models_output_dir here
+        print(f"Processed data saved to {PROCESSED_DATA_DIR}") # Use PROCESSED_DATA_DIR here
+        print("Check MLflow UI (mlflow ui) for experiment details.")
 
 
 if __name__ == "__main__":
@@ -247,7 +381,7 @@ if __name__ == "__main__":
     RAW_DATA_CSV = os.path.join(PROJECT_ROOT, 'data', 'synthetic', 'synthetic_ecommerce_data.csv')
     PROCESSED_DATA_CSV = os.path.join(PROJECT_ROOT, 'data', 'processed', 'PreparedSalesData.csv')
     MODELS_DIR = os.path.join(PROJECT_ROOT, 'models_initial')
-    PREPROCESSOR_PATH = os.path.join(PROJECT_ROOT, 'models_initial', 'preprocessor.pkl')
+    PREPROCESSOR_PATH = os.path.join(MODELS_DIR, 'preprocessor.pkl')
     DAILY_AGGREGATED_CSV = os.path.join(PROJECT_ROOT, 'data', 'processed', 'daily_aggregated_revenue.csv')
 
     # Ensure raw data exists

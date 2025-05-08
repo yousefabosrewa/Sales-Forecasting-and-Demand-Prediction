@@ -7,6 +7,7 @@ import seaborn as sns
 import os
 import io # Import io for StringIO/BytesIO
 import altair as alt # Import Altair for interactive plots
+from datetime import date, timedelta # Import date and timedelta for date inputs
 
 # Define the URL of your locally running Flask API
 # If running Flask in Docker, this will be different (e.g., http://flask_container_name:5000)
@@ -14,6 +15,7 @@ API_URL = os.environ.get("API_URL", "http://localhost:5001") # Use port 5001 for
 PREDICT_SINGLE_URL = f"{API_URL}/predict"
 PREDICT_BATCH_CSV_URL = f"{API_URL}/predict_batch_csv"
 STATUS_URL = f"{API_URL}/status"
+FORECAST_SARIMA_URL = f"{API_URL}/forecast_sarima" # New endpoint for SARIMA forecast
 
 
 # --- Page Configuration ---
@@ -43,6 +45,9 @@ api_status = get_api_status(STATUS_URL)
 
 if api_status.get("status") == "ok":
     st.sidebar.success("API Status: Connected and Ready")
+    # Check if SARIMA model is specifically loaded for forecasting section
+    if not api_status.get("sarima_model_loaded", False):
+         st.sidebar.warning("SARIMA model not loaded. Forecasting unavailable.")
 else:
     st.sidebar.error(f"API Status: {api_status.get('status', 'unknown')}. Details: {api_status.get('details', 'N/A')}")
     st.warning("The prediction API is not available. Some functionalities may be limited.")
@@ -107,7 +112,7 @@ if df is not None:
                 end_date = max(date_range_hist)
                 filtered_hist_df = filtered_hist_df[(filtered_hist_df.index.date >= start_date) & (filtered_hist_df.index.date <= end_date)]
             elif len(date_range_hist) == 1:
-                 filtered_hist_df = filtered_hist_df[filtered_hist_df.index.date == date_range_hist[0]]
+                 filtered_hist_df = filtered_hist_df[filtered_hist_df.index.date == date_range_hist[0]] # Corrected variable name
 
 
             # Category Filter
@@ -267,13 +272,13 @@ st.header("Make Predictions")
 if api_status.get("status") == "ok":
     prediction_type = st.radio(
         "Select Prediction Type:",
-        ("Single Prediction", "Batch Prediction (CSV Upload)")
+        ("Single Prediction", "Batch Prediction (CSV Upload)", "Time-Series Forecast (SARIMA)") # Added SARIMA option
     )
 
-    # --- Single Prediction ---
+    # --- Single Prediction (Transactional Model) ---
     if prediction_type == "Single Prediction":
-        st.subheader("Single Prediction")
-        st.write("Enter features for a single transaction:")
+        st.subheader("Single Prediction (Transactional Model)")
+        st.write("Enter features for a single transaction to predict its revenue.")
 
         # Input fields for features (match API PredictionInput schema)
         # These should ideally reflect the *original* columns needed for preprocessing
@@ -334,9 +339,9 @@ if api_status.get("status") == "ok":
                  st.error(f"An unexpected error occurred during single prediction: {e}")
 
 
-    # --- Batch Prediction ---
+    # --- Batch Prediction (Transactional Model) ---
     elif prediction_type == "Batch Prediction (CSV Upload)":
-        st.subheader("Batch Prediction (CSV Upload)")
+        st.subheader("Batch Prediction (CSV Upload) (Transactional Model)")
         st.write("Upload a CSV file for batch predictions. The CSV should have the same columns as the original data (including 'Transaction_Date', 'Category', 'Region', etc.).")
 
         batch_upload_file = st.file_uploader("Upload batch prediction CSV", type=["csv"])
@@ -503,6 +508,7 @@ if api_status.get("status") == "ok":
                              ax_cat_bar.set_title("Average Predicted Revenue by Category")
                              ax_cat_bar.set_xlabel("Average Predicted Revenue")
                              ax_cat_bar.set_ylabel("Category")
+                             plt.xticks(rotation=45, ha='right') # Rotate labels for readability
                              st.pyplot(fig_cat_bar)
 
                              st.write("Distribution by Category (Boxplot):")
@@ -579,7 +585,7 @@ if api_status.get("status") == "ok":
                              st.write("Yearly Predicted Revenue Trend:")
                              chart_yearly = alt.Chart(yearly_pred_revenue).mark_line().encode(
                                  x=alt.X('Date:T', title='Date'),
-                                 y=alt.Y('Predicted Revenue:Q', title='Predicted Revenue'),
+                                 y=alt.Y('Predicted Revenue:Q', title='Revenue'),
                                  tooltip=[alt.Tooltip('Date:T'), alt.Tooltip('Predicted Revenue:Q', format='$,.2f')]
                              ).properties(
                                  title='Yearly Predicted Revenue Trend'
@@ -639,6 +645,113 @@ if api_status.get("status") == "ok":
                              st.error(f"API Response: {response.text}")
                     except Exception as e:
                         st.error(f"An unexpected error occurred during batch prediction: {e}")
+
+    # --- Time-Series Forecast (SARIMA Model) ---
+    elif prediction_type == "Time-Series Forecast (SARIMA)":
+        st.subheader("Time-Series Forecast (SARIMA Model)")
+        st.write("Forecast future daily revenue using the trained SARIMA model.")
+
+        # Check if SARIMA model is loaded
+        if api_status.get("sarima_model_loaded", False):
+            st.info("SARIMA model is loaded and ready for forecasting.")
+
+            # Input for forecast dates
+            today = date.today()
+            default_start_date = today + timedelta(days=1) # Start forecast from tomorrow
+            default_end_date = today + timedelta(days=30) # Forecast for the next 30 days
+
+            forecast_start_date = st.date_input("Forecast Start Date:", default_start_date)
+            forecast_end_date = st.date_input("Forecast End Date:", default_end_date)
+
+            forecast_button = st.button("Run Time-Series Forecast")
+
+            if forecast_button:
+                if forecast_start_date > forecast_end_date:
+                    st.error("Forecast start date cannot be after end date.")
+                else:
+                    with st.spinner("Generating time-series forecast..."):
+                        try:
+                            # Prepare request body for the new API endpoint
+                            forecast_input_data = {
+                                "start_date": forecast_start_date.strftime("%Y-%m-%d"),
+                                "end_date": forecast_end_date.strftime("%Y-%m-%d")
+                            }
+
+                            response = requests.post(FORECAST_SARIMA_URL, json=forecast_input_data)
+                            response.raise_for_status() # Raise an HTTPError for bad responses
+
+                            forecast_results = response.json()
+
+                            if forecast_results and 'forecasts' in forecast_results:
+                                # Convert results to DataFrame
+                                forecast_df = pd.DataFrame(forecast_results['forecasts'])
+                                forecast_df['date'] = pd.to_datetime(forecast_df['date'])
+                                forecast_df = forecast_df.set_index('date').sort_index()
+
+                                st.success("Time-series forecast completed!")
+
+                                # Display forecast table
+                                st.subheader("Forecasted Daily Revenue")
+                                st.dataframe(forecast_df)
+
+                                # Visualize forecast trend (using Altair)
+                                st.subheader("Forecast Trend")
+                                chart_forecast = alt.Chart(forecast_df.reset_index()).mark_line().encode(
+                                    x=alt.X('date:T', title='Date'),
+                                    y=alt.Y('predicted_revenue:Q', title='Predicted Revenue'),
+                                    tooltip=[alt.Tooltip('date:T'), alt.Tooltip('predicted_revenue:Q', format='$,.2f')]
+                                ).properties(
+                                    title='SARIMA Predicted Daily Revenue Trend'
+                                ).interactive()
+                                st.altair_chart(chart_forecast, use_container_width=True)
+
+                                # Optional: Combine historical data trend with forecast trend for visualization
+                                if df is not None and 'Transaction_Date' in df.columns and 'Revenue' in df.columns:
+                                     st.subheader("Historical and Forecasted Revenue Trend")
+                                     # Aggregate historical data to daily for combining
+                                     historical_daily_revenue = df.resample('D')['Revenue'].sum().reset_index()
+                                     historical_daily_revenue.columns = ['date', 'Revenue']
+                                     historical_daily_revenue['Type'] = 'Historical'
+                                     forecast_df_display = forecast_df.reset_index()
+                                     forecast_df_display.columns = ['date', 'Revenue'] # Rename for concatenation
+                                     forecast_df_display['Type'] = 'Forecast'
+
+                                     combined_trend_df = pd.concat([historical_daily_revenue, forecast_df_display])
+
+                                     chart_combined = alt.Chart(combined_trend_df).mark_line().encode(
+                                         x=alt.X('date:T', title='Date'),
+                                         y=alt.Y('Revenue:Q', title='Revenue'),
+                                         color='Type:N', # Color by type (Historical vs Forecast)
+                                         tooltip=['date', alt.Tooltip('Revenue:Q', format='$,.2f'), 'Type']
+                                     ).properties(
+                                         title='Historical and Forecasted Daily Revenue Trend'
+                                     ).interactive()
+                                     st.altair_chart(chart_combined, use_container_width=True)
+
+
+                                # Optional: Allow downloading forecast results
+                                csv_output_forecast = forecast_df.to_csv().encode('utf-8') # Index is date, so no index=False needed
+                                st.download_button(
+                                    label="Download Forecast Results as CSV",
+                                    data=csv_output_forecast,
+                                    file_name='sarima_forecast.csv',
+                                    mime='text/csv',
+                                )
+
+
+                            else:
+                                st.warning("Forecast completed but no results were returned.")
+
+                        except requests.exceptions.RequestException as e:
+                            st.error(f"Error calling SARIMA forecast API: {e}")
+                            if response:
+                                 st.error(f"API Response: {response.text}")
+                        except Exception as e:
+                             st.error(f"An unexpected error occurred during SARIMA forecasting: {e}")
+
+        else:
+            st.info("SARIMA model is not loaded. Please ensure the training pipeline was run successfully.")
+
 
 else:
     st.info("Connect to the prediction API to enable prediction features.")

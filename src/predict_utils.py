@@ -2,21 +2,31 @@ import pandas as pd
 import numpy as np
 import joblib
 import os
+import warnings # To manage warnings if needed
+from datetime import datetime # Import datetime for date handling in SARIMA prediction
+
 # Import necessary preprocessing and feature engineering functions/classes
 # Note: We need to *apply* the fitted preprocessor, not refit it.
 # We also need to apply the *same* feature engineering steps (time/season for simplified real-time).
 from sklearn.preprocessing import OneHotEncoder, MinMaxScaler # Needed for type hinting/structure
-import warnings # To manage warnings if needed
 
 # Define columns for different scaling methods (should match data_preprocessing)
 # These are the names *before* any transformation or dropping.
+# Assuming these are consistent with how the preprocessor was fitted.
 LOG_COLS_PREPROC = ['Ad_Spend', 'Revenue', 'Conversion_Rate']
 MINMAX_COLS_PREPROC = ['Discount_Applied', 'Clicks', 'Impressions', 'Ad_CTR', 'Ad_CPC', 'Units_Sold'] # Included Units_Sold for scaling consistency
 
 
+# Note: Model and preprocessor loading is handled by model_loader.py
+# We will import necessary getters from there.
+from src.api.model_loader import get_feature_columns # Assuming this function exists in model_loader.py
+
+
 def load_model_and_preprocessor(model_path, preprocessor_path):
     """
-    Loads the trained model and the fitted preprocessor objects.
+    Loads the trained transactional model and the fitted preprocessor objects.
+    Note: This function is primarily for scripts like train.py or monitor.py.
+    The API loads models via model_loader.py.
     """
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file not found at: {model_path}")
@@ -150,7 +160,14 @@ def preprocess_for_prediction(data_point_or_df, preprocessor):
             # handle_unknown='ignore' in the encoder helps with unseen categories
             one_hot_encoded = encoder.transform(df_temp[cat_cols_present_for_encoding])
             # Get feature names from the fitted encoder to ensure correct columns
-            one_hot_col_names = encoder.get_feature_names_out(cat_cols_trained) # Use original names for consistent column names
+            # Use original names for consistent column names - encoder.get_feature_names_out() is preferred
+            # Fallback if get_feature_names_out is not available (older sklearn)
+            try:
+                one_hot_col_names = encoder.get_feature_names_out(cat_cols_trained)
+            except AttributeError:
+                 warnings.warn("Using deprecated .get_feature_names. Consider updating scikit-learn.")
+                 one_hot_col_names = encoder.get_feature_names(cat_cols_trained)
+
 
             one_hot_df = pd.DataFrame(one_hot_encoded, columns=one_hot_col_names, index=df_temp.index)
 
@@ -172,7 +189,8 @@ def preprocess_for_prediction(data_point_or_df, preprocessor):
     if log_cols_apply:
         # Ensure values are non-negative before log1p
         for col in log_cols_apply:
-             if (df_temp[col] < 0).any().any(): # .any() chain to handle DataFrame slice
+             # Check if any value is negative in the column slice
+             if (df_temp[col] < 0).any():
                   warnings.warn(f"Negative values found in '{col}'. log1p may produce NaNs. Replacing negatives with 0.")
                   df_temp[col] = df_temp[col].apply(lambda x: max(0, x)) # Ensure non-negative
         try:
@@ -223,7 +241,12 @@ def preprocess_for_prediction(data_point_or_df, preprocessor):
     # Add missing columns with a default value (0 is common for one-hot encoded features,
     # or engineered features like lags not added here).
     # Drop any extra columns not in the training set.
-    final_feature_cols = train_feature_columns
+    # Get the expected feature columns from the preprocessor
+    final_feature_cols = preprocessor.get('feature_columns')
+
+    if final_feature_cols is None:
+         raise ValueError("Preprocessor does not contain 'feature_columns'. Cannot align data.")
+
 
     # Add missing columns with default value 0
     missing_cols = set(final_feature_cols) - set(df_temp.columns)
@@ -237,14 +260,16 @@ def preprocess_for_prediction(data_point_or_df, preprocessor):
         df_temp = df_temp.drop(columns=list(extra_cols))
 
     # Ensure column order matches training
-    df_final_features = df_temp[final_feature_cols]
+    # Use .loc to ensure index is preserved
+    df_final_features = df_temp.loc[:, final_feature_cols]
+
 
     return df_final_features
 
 
 def predict_revenue(model, preprocessed_features, preprocessor):
     """
-    Makes revenue predictions using the loaded model and preprocessed features.
+    Makes revenue predictions using the loaded transactional model on processed features.
     Applies inverse transformations if needed.
     """
     if preprocessed_features.empty:
@@ -272,6 +297,10 @@ def predict_revenue(model, preprocessed_features, preprocessor):
 
     # Let's assume 'Revenue' was correctly identified and transformed if present in LOG_COLS_PREPROC
     # and log_cols_trained correctly reflects this.
+    # Also, check if the scaler is present, as inverse transform might be needed even if only log1p was applied
+    # if the target was part of the columns fed to the scaler.
+    # However, for simplicity and assuming only log1p was applied to the target 'Revenue'
+    # before the model saw it, we only inverse log1p if 'Revenue' was in log_cols_trained.
     if 'Revenue' in log_cols_trained:
         # Ensure predictions are non-negative before expm1
         y_pred_scaled[y_pred_scaled < 0] = 0 # Cap predictions at 0 before inverse log
@@ -287,12 +316,46 @@ def predict_revenue(model, preprocessed_features, preprocessor):
     return y_pred
 
 
-# --- Helper functions used internally by preprocess_for_prediction ---
-# (Copied from feature_engineering.py logic, but simplified for prediction flow)
-# These are NOT separate callable functions from outside predict_utils.
+def predict_sarima(sarima_model, start_date, end_date):
+    """
+    Generates time-series forecasts using the loaded SARIMA model.
+    Assumes the SARIMA model is trained on daily aggregated data.
+    sarima_model: The loaded SARIMA model object (e.g., from statsmodels.tsa.statespace.sarimax.SARIMAXResults).
+    start_date: The start date for forecasting (datetime object).
+    end_date: The end date for forecasting (datetime object).
+    """
+    if sarima_model is None:
+        print("SARIMA model not loaded. Cannot generate forecast.")
+        return pd.Series() # Return empty Series
 
-# (No need to define add_time_features_for_prediction or add_lag_rolling_features_for_prediction)
-# The logic is directly within preprocess_for_prediction
+    try:
+        # The SARIMA model's predict method typically takes start and end indices.
+        # For forecasting, the start index is usually the date immediately after the training data ends.
+        # The end index is the requested end date.
+        # Need to ensure the SARIMA model object (from statsmodels) has a predict method
+        # that can handle date indices directly or calculate steps based on the training data end.
+
+        # Assuming the model object has a predict method that takes start and end dates (as pandas Timestamp or datetime)
+        # Need to ensure start_date and end_date are in the correct format (datetime objects)
+        if not isinstance(start_date, datetime) or not isinstance(end_date, datetime):
+             print("Invalid date types provided for SARIMA forecast.")
+             return pd.Series()
+
+        # Generate the forecast
+        # The predict method should return a pandas Series with dates as index
+        # The dates in the index should be pandas Timestamps.
+        forecast_series = sarima_model.predict(start=start_date, end=end_date)
+
+        # Ensure forecast values are non-negative if revenue cannot be negative
+        forecast_series[forecast_series < 0] = 0
+
+        return forecast_series
+
+    except Exception as e:
+        print(f"Error during SARIMA forecast prediction: {e}")
+        import traceback
+        traceback.print_exc() # Print traceback for debugging
+        return pd.Series() # Return empty Series on error
 
 
 if __name__ == "__main__":
@@ -303,16 +366,25 @@ if __name__ == "__main__":
     MODEL_PATH_RF = os.path.join(PROJECT_ROOT, 'models_initial', 'best_random_forest_revenue_model.pkl')
     PREPROCESSOR_PATH = os.path.join(PROJECT_ROOT, 'models_initial', 'preprocessor.pkl')
     SAMPLE_DATA_CSV = os.path.join(PROJECT_ROOT, 'data', 'synthetic', 'synthetic_ecommerce_data.csv')
+    SARIMA_MODEL_PATH = os.path.join(PROJECT_ROOT, 'models_initial', 'sarima_revenue_model.pkl') # Path to SARIMA model
 
     # Need to run the training script first to generate model and preprocessor files
-    if not os.path.exists(MODEL_PATH_RF) or not os.path.exists(PREPROCESSOR_PATH):
-        print("Error: Model or preprocessor not found.")
-        print(f"Ensure {MODEL_PATH_RF} and {PREPROCESSOR_PATH} exist.")
+    if not os.path.exists(MODEL_PATH_RF) or not os.path.exists(PREPROCESSOR_PATH) or not os.path.exists(SARIMA_MODEL_PATH):
+        print("Error: One or more model/preprocessor files not found.")
+        print(f"Ensure {MODEL_PATH_RF}, {PREPROCESSOR_PATH}, and {SARIMA_MODEL_PATH} exist.")
         print("Please run the training script (src/train.py or dvc repro) first.")
     else:
         try:
-            model, preprocessor = load_model_and_preprocessor(MODEL_PATH_RF, PREPROCESSOR_PATH)
+            # Load transactional model and preprocessor (for transactional prediction example)
+            model_rf, preprocessor = load_model_and_preprocessor(MODEL_PATH_RF, PREPROCESSOR_PATH)
 
+            # Load SARIMA model (for time-series forecast example)
+            print(f"\nLoading SARIMA model from {SARIMA_MODEL_PATH}...")
+            sarima_model = joblib.load(SARIMA_MODEL_PATH)
+            print("SARIMA model loaded.")
+
+
+            # --- Example of Transactional Prediction ---
             # Create some sample raw data for prediction
             # Load a few rows from the original data to simulate new input
             try:
@@ -333,6 +405,7 @@ if __name__ == "__main__":
                  sample_raw_df = sample_raw_df[[col for col in required_orig_cols if col in sample_raw_df.columns]]
 
 
+                 print("\n--- Transactional Prediction Example ---")
                  print("\nSample raw data for prediction:")
                  print(sample_raw_df)
 
@@ -344,23 +417,47 @@ if __name__ == "__main__":
                  print(sample_processed_features)
                  print("\nProcessed features shape:", sample_processed_features.shape)
                  print("\nProcessed features columns:", sample_processed_features.columns.tolist())
-                 print("\nExpected training features columns:", preprocessor.get('feature_columns', 'N/A'))
+                 # print("\nExpected training features columns:", preprocessor.get('feature_columns', 'N/A'))
 
 
                  # Make predictions
-                 predictions = predict_revenue(model, sample_processed_features, preprocessor)
+                 predictions_transactional = predict_revenue(model_rf, sample_processed_features, preprocessor)
 
-                 print("\nPredictions:")
-                 print(predictions)
-                 print("\nPredictions (rounded):")
-                 print(np.round(predictions, 2))
+                 print("\nTransactional Predictions:")
+                 print(predictions_transactional)
+                 print("\nTransactional Predictions (rounded):")
+                 print(np.round(predictions_transactional, 2))
 
             except FileNotFoundError:
                 print(f"Error: Sample data file not found at {SAMPLE_DATA_CSV}")
             except Exception as e:
-                 print(f"An error occurred during the prediction process: {e}")
+                 print(f"An error occurred during the transactional prediction example: {e}")
                  import traceback
                  traceback.print_exc()
+
+
+            # --- Example of Time-Series Forecast ---
+            print("\n--- Time-Series Forecast Example (SARIMA) ---")
+            # Define a forecast date range (e.g., next 7 days starting from a specific date)
+            # For a real SARIMA forecast, the start date should be the day * after * the last date in the training data.
+            # For this example, let's pick a date range for demonstration.
+            # You would need to determine the actual last training date from your data/training process.
+            forecast_start_date_example = datetime(2025, 1, 1) # Example start date
+            forecast_end_date_example = datetime(2025, 1, 7)   # Example end date
+
+            print(f"\nGenerating SARIMA forecast from {forecast_start_date_example.date()} to {forecast_end_date_example.date()}")
+
+            try:
+                 forecast_series = predict_sarima(sarima_model, forecast_start_date_example, forecast_end_date_example)
+
+                 print("\nSARIMA Forecast (Predicted Daily Revenue):")
+                 print(forecast_series)
+
+            except Exception as e:
+                 print(f"An error occurred during the SARIMA forecast example: {e}")
+                 import traceback
+                 traceback.print_exc()
+
 
         except FileNotFoundError as e:
             print(f"Error during setup: {e}")
@@ -368,4 +465,3 @@ if __name__ == "__main__":
             print(f"An unexpected error occurred during the script execution: {e}")
             import traceback
             traceback.print_exc()
-
