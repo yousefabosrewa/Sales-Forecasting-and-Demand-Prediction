@@ -5,13 +5,12 @@ import os
 import mlflow
 import mlflow.sklearn
 import mlflow.xgboost
-import mlflow.statsmodels  # For SARIMA
+import mlflow.statsmodels # For SARIMA
 from sklearn.ensemble import RandomForestRegressor
 import xgboost as xgb
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score  # <-- ADD THIS
 from datetime import datetime
-
 
 # Import modularized functions
 from src.data_preprocessing import preprocess_data # Need to import the function itself
@@ -45,18 +44,24 @@ def train_models(
     print("Loading processed data for feature engineering...")
     df_processed = pd.read_csv(processed_data_path)
 
-    # Add time features (sets date as index)
+    # Add time features (sets date as index) - this is for RF/XGB data
     df_features = add_time_features(df_processed)
 
     # --- Prepare data for SARIMA (daily aggregated) ---
     # Need the original Revenue column before scaling for SARIMA aggregation
-    # This requires reading the processed data *before* Revenue scaling, or
-    # getting the original Revenue from the raw data or during preprocessing.
-    # Let's load raw data again just to get original Revenue for aggregation simplicity.
-    # A robust pipeline would handle this Revenue column differently.
+    # Load raw data again specifically for SARIMA aggregation
+    print("Loading raw data for SARIMA aggregation...")
     raw_df_for_sarima = pd.read_csv(raw_data_path)
+
+    # --- FIX: Convert to datetime and set index for SARIMA data ---
+    print("Converting 'Transaction_Date' to datetime and setting as index for SARIMA data...")
     raw_df_for_sarima['Transaction_Date'] = pd.to_datetime(raw_df_for_sarima['Transaction_Date'])
-    daily_revenue_series = aggregate_daily_revenue(raw_df_for_sarima)
+    raw_df_for_sarima.set_index('Transaction_Date', inplace=True)
+    raw_df_for_sarima = raw_df_for_sarima.sort_index() # Ensure sorted by date
+
+
+    # Aggregate data to daily frequency for SARIMA
+    daily_revenue_series = aggregate_daily_revenue(raw_df_for_sarima) # Pass the DataFrame with DatetimeIndex
     daily_revenue_series.to_csv(daily_aggregated_path, header=['Revenue'])
     print(f"Daily aggregated revenue saved to {daily_aggregated_path}")
 
@@ -159,8 +164,10 @@ def train_models(
         print("Training SARIMA model...")
         # SARIMA uses the daily aggregated data
         # Need to split the daily aggregated data based on the same time split
+        # Use the index from the test_df (which has the correct split date) to find the split point
         sarima_train = daily_revenue_series[daily_revenue_series.index <= split_date]
         sarima_test = daily_revenue_series[daily_revenue_series.index > split_date]
+
 
         sarima_order = (1, 1, 1)
         seasonal_order = (1, 1, 1, 12) # Assuming monthly seasonality
@@ -218,6 +225,14 @@ def train_models(
             'r2': rf_metrics.get('r2', 0.0), # Use get with default in case of error
             'mae': rf_metrics.get('mae', np.inf)
         }
+        # Ensure the directory exists before saving
+        baseline_metrics_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'processed')
+        os.makedirs(baseline_metrics_dir, exist_ok=True)
+        baseline_metrics_path = os.path.join(baseline_metrics_dir, "baseline_metrics.json")
+        with open(baseline_metrics_path, 'w') as f:
+            import json
+            json.dump(baseline_metrics, f)
+
         mlflow.log_dict(baseline_metrics, "baseline_metrics.json")
         print(f"Baseline metrics for monitoring logged: {baseline_metrics}")
 

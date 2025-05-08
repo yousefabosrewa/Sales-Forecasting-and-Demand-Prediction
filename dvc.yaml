@@ -15,7 +15,8 @@ stages:
   # training all models, evaluating, logging to MLflow, and saving models.
   # It depends on the output of the preprocess stage.
   train:
-    cmd: python src/train.py data/synthetic/synthetic_ecommerce_data.csv data/processed/PreparedSalesData.csv models_initial models_initial/preprocessor.pkl data/processed/daily_aggregated_revenue.csv
+    # CORRECTED COMMAND: Use -m src.train to run the script as a module
+    cmd: python -m src.train data/synthetic/synthetic_ecommerce_data.csv data/processed/PreparedSalesData.csv models_initial models_initial/preprocessor.pkl data/processed/daily_aggregated_revenue.csv
     deps:
       - src/train.py
       - src/feature_engineering.py # Dependency on feature engineering logic
@@ -28,4 +29,4 @@ stages:
       - models_initial/xgboost_revenue_model.pkl      # Output trained XGB model
       - models_initial/sarima_revenue_model.pkl       # Output trained SARIMA model
       - data/processed/daily_aggregated_revenue.csv   # Output daily aggregated data (used by SARIMA)
-      # REMOVED models_initial/preprocessor.pkl from outs here
+      # REMOVED models_initial/preprocessor.pkl from outs here in previous correction
