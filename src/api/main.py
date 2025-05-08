@@ -3,8 +3,8 @@ from flask_pydantic import validate
 import pandas as pd
 import io # For CSV processing
 import traceback # For error logging
+import sys # Import sys for printing to stderr
 import os
-
 # Import model loading and prediction utilities
 from src.api.model_loader import get_model, get_preprocessor, load_latest_model # Import load_latest_model for /reload endpoint
 from src.predict_utils import preprocess_for_prediction, predict_revenue
@@ -29,20 +29,12 @@ def predict_single(body: PredictionInput):
 
     try:
         # Convert Pydantic model to pandas DataFrame row
-        # Need to handle potential date format parsing here if not strict in schema
-        # Pydantic Date type could be used, but string is flexible.
-        # Ensure the dict keys match the original raw column names expected by preprocess_for_prediction
         input_data_raw = body.model_dump() # For pydantic v2+, use model_dump()
         # input_data_raw = body.dict() # For pydantic v1
-
-        # Handle date string to datetime object if needed by preprocess_for_prediction
-        # The preprocess_for_prediction function handles date conversion internally.
 
         input_df = pd.DataFrame([input_data_raw]) # Convert single dict to DataFrame
 
         # Preprocess the input data
-        # This function will add time features, handle encoding/scaling, and align columns
-        # It will NOT add lag/rolling features for real-time prediction simplification.
         processed_features = preprocess_for_prediction(input_df, preprocessor)
 
         if processed_features.empty:
@@ -54,18 +46,19 @@ def predict_single(body: PredictionInput):
 
         # Assuming a single prediction is returned for single input
         if len(predictions) != 1:
+             # This should ideally not happen for a single input
+             print(f"Warning: predict_revenue returned {len(predictions)} predictions for single input.")
              return jsonify({"error": "Unexpected number of predictions returned."}), 500 # Internal Server Error
 
 
         # Return prediction as JSON
         output = PredictionOutput(predicted_revenue=predictions[0])
         return jsonify(output.model_dump()) # For pydantic v2+, use model_dump()
-        # return jsonify(output.dict()) # For pydantic v1
 
 
     except Exception as e:
-        print(f"Error during single prediction: {e}")
-        traceback.print_exc() # Log traceback
+        print(f"Error during single prediction: {e}", file=sys.stderr) # Print errors to stderr
+        traceback.print_exc(file=sys.stderr) # Print traceback to stderr
         return jsonify({"error": "An internal error occurred during prediction.", "details": str(e)}), 500 # Internal Server Error
 
 
@@ -83,7 +76,6 @@ def predict_batch_json(body: BatchPredictionInput):
 
      try:
          # Convert list of Pydantic models to pandas DataFrame
-         # input_list_of_dicts = [item.dict() for item in body.data] # pydantic v1
          input_list_of_dicts = [item.model_dump() for item in body.data] # pydantic v2+
          input_df_raw = pd.DataFrame(input_list_of_dicts)
 
@@ -91,11 +83,6 @@ def predict_batch_json(body: BatchPredictionInput):
               return jsonify({"predictions": []}), 200 # OK, but no data processed
 
          # Preprocess the batch data
-         # preprocess_for_prediction can handle a DataFrame input
-         # Note: For batch, especially larger batches, adding lag/rolling features
-         # becomes more feasible if you have access to the full batch + historical data.
-         # However, sticking to the simplified real-time model for consistency in this example.
-         # If using the full model, this preprocessing step would need to include lag/rolling.
          processed_features = preprocess_for_prediction(input_df_raw, preprocessor)
 
          if processed_features.empty:
@@ -111,11 +98,10 @@ def predict_batch_json(body: BatchPredictionInput):
          # Return batch predictions as JSON
          output = BatchPredictionOutput(predictions=output_predictions)
          return jsonify(output.model_dump()) # pydantic v2+
-         # return jsonify(output.dict()) # pydantic v1
 
      except Exception as e:
-        print(f"Error during batch JSON prediction: {e}")
-        traceback.print_exc() # Log traceback
+        print(f"Error during batch JSON prediction: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         return jsonify({"error": "An internal error occurred during batch prediction (JSON).", "details": str(e)}), 500
 
 
@@ -131,49 +117,71 @@ def predict_batch_csv():
         return jsonify({"error": "Model or preprocessor not loaded. Server is not ready."}), 503 # Service Unavailable
 
     if 'file' not in request.files:
+        print("API: No 'file' part in the request.", file=sys.stderr) # Debug print
         return jsonify({"error": "No file part in the request"}), 400 # Bad Request
 
     file = request.files['file']
 
     if file.filename == '':
+        print("API: No selected file.", file=sys.stderr) # Debug print
         return jsonify({"error": "No selected file"}), 400 # Bad Request
 
     if file and file.filename.endswith('.csv'):
         try:
+            print(f"API: Received file: {file.filename}", file=sys.stderr) # Debug print
+
             # Read the CSV file into a pandas DataFrame
             # Use BytesIO to read from memory buffer
             csv_data = io.BytesIO(file.read())
+            print("API: Attempting to read CSV into DataFrame...", file=sys.stderr) # Debug print
             input_df_raw = pd.read_csv(csv_data)
+            print("API: Successfully read CSV into DataFrame.", file=sys.stderr) # Debug print
+            print("API: DataFrame head:", file=sys.stderr) # Debug print
+            print(input_df_raw.head(), file=sys.stderr) # Debug print
+            print("API: DataFrame columns:", file=sys.stderr) # Debug print
+            print(input_df_raw.columns.tolist(), file=sys.stderr) # Debug print
+            print("API: DataFrame info:", file=sys.stderr) # Debug print
+            input_df_raw.info(buf=sys.stderr) # Print info to stderr
+
 
             if input_df_raw.empty:
+                 print("API: Read an empty DataFrame from CSV.", file=sys.stderr) # Debug print
                  return jsonify({"predictions": []}), 200 # OK, but no data processed
 
 
+            print("API: Calling preprocess_for_prediction...", file=sys.stderr) # Debug print
             # Preprocess the batch data
-            # This handles FE (time/season), encoding, scaling, and alignment
-            # Still assuming no lag/rolling features for real-time model
-            # If using a model with lags/rolling in batch, this step needs refinement.
             processed_features = preprocess_for_prediction(input_df_raw, preprocessor)
+            print("API: preprocess_for_prediction completed.", file=sys.stderr) # Debug print
+            print("API: Processed features shape:", processed_features.shape, file=sys.stderr) # Debug print
+            print("API: Processed features columns:", processed_features.columns.tolist(), file=sys.stderr) # Debug print
+
 
             if processed_features.empty:
+                 print("API: Preprocessing resulted in no valid features.", file=sys.stderr) # Debug print
                  return jsonify({"error": "Preprocessing resulted in no valid features for any record from CSV."}), 400
 
 
+            print("API: Calling predict_revenue...", file=sys.stderr) # Debug print
             # Make predictions for the batch
             predictions = predict_revenue(model, processed_features, preprocessor)
+            print("API: predict_revenue completed.", file=sys.stderr) # Debug print
+
 
             # Structure the output
             # Return as a list of dicts or a simple list
             output_predictions = [{"predicted_revenue": float(p)} for p in predictions]
 
+            print("API: Returning batch predictions JSON.", file=sys.stderr) # Debug print
             return jsonify({"predictions": output_predictions})
 
         except Exception as e:
-            print(f"Error during batch CSV prediction: {e}")
-            traceback.print_exc() # Log traceback
+            print(f"API: Error during batch CSV prediction: {e}", file=sys.stderr) # Print errors to stderr
+            traceback.print_exc(file=sys.stderr) # Print traceback to stderr
             return jsonify({"error": "An internal error occurred during batch prediction (CSV).", "details": str(e)}), 500
 
     else:
+        print(f"API: Invalid file type uploaded: {file.filename}", file=sys.stderr) # Debug print
         return jsonify({"error": "Invalid file type. Please upload a CSV file."}), 400 # Bad Request
 
 @app.route('/status', methods=['GET'])
@@ -225,4 +233,4 @@ if __name__ == '__main__':
              print("API: Model/preprocessor not found. Cannot start in a ready state.")
              print("Please run training (src/train.py) first.")
 
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, host='0.0.0.0', port=5001) # Use port 5001 for API

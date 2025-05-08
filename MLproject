@@ -6,7 +6,7 @@ name: sales_demand_forecasting_mlops
 # Ensure your requirements.txt is up-to-date with all dependencies
 conda_env: conda.yaml # Assuming you can generate a conda.yaml or use pip_env
 # OR use pip_env
-# pip_env: requirements.txt
+pip_env: requirements.txt # Using pip_env with requirements.txt
 
 entry_points:
   # Entry point for data preprocessing
@@ -20,7 +20,7 @@ entry_points:
   # Entry point for feature engineering and training
   # This entry point runs the full training logic including FE and model saving
   train:
-    command: "python src/train.py {raw_data_path} {processed_data_path} {models_output_dir} {preprocessor_path} {daily_aggregated_path}"
+    command: "python -m src.train {raw_data_path} {processed_data_path} {models_output_dir} {preprocessor_path} {daily_aggregated_path}"
     parameters:
       raw_data_path: {type: path, default: data/synthetic/synthetic_ecommerce_data.csv}
       processed_data_path: {type: path, default: data/processed/PreparedSalesData.csv}
@@ -40,10 +40,9 @@ entry_points:
        alert_log_path: {type: path, default: data/processed/monitoring_alerts.log}
 
   # Entry point to run the Flask API (for local testing/development)
-  # In production, you'd typically use Gunicorn/Waitress directly or via Docker ENTRYPOINT
+  # Using Waitress for Windows compatibility
   api_serve:
-    command: "gunicorn --bind 0.0.0.0:5000 src.api.main:app" # Use Gunicorn
-    # command: "python src/api/main.py" # Use Flask development server (not for production)
+    command: "waitress-serve --listen=0.0.0.0:5000 src.api.main:app"
 
   # Entry point to run the Streamlit app (for local testing/development)
   app_serve:
