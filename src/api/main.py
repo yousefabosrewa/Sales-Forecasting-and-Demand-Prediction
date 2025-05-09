@@ -306,6 +306,90 @@ def forecast_sarima(body: SarimaForecastInput):
         return jsonify({"error": "An internal error occurred during SARIMA forecasting.", "details": str(e)}), 500
 
 
+@app.route('/model_info', methods=['GET'])
+def get_model_info():
+    """
+    Endpoint to provide model information including feature importance.
+    This is used for model explainability visualizations.
+    """
+    model = get_model()  # Get the transactional model (RF or XGBoost)
+    preprocessor = get_preprocessor()
+    sarima_model = get_sarima_model()  # Get the SARIMA model
+
+    if model is None or preprocessor is None:
+        return jsonify({
+            "status": "error",
+            "details": "Transactional model or preprocessor not loaded"
+        }), 503  # Service Unavailable
+
+    try:
+        model_info = {
+            "model_type": str(type(model).__name__),
+            "features": []
+        }
+
+        # Get feature names if available
+        if hasattr(preprocessor, 'get_feature_names_out'):
+            try:
+                feature_names = preprocessor.get_feature_names_out()
+                model_info["features"] = feature_names.tolist()
+            except Exception as e:
+                print(f"Error getting feature names: {e}", file=sys.stderr)
+                # Continue without feature names
+                feature_names = [f"feature_{i}" for i in range(100)]  # Fallback
+        else:
+            feature_names = [f"feature_{i}" for i in range(100)]  # Fallback
+
+        # Extract feature importance from model if available
+        feature_importance = {}
+        
+        # For Random Forest or similar models
+        if hasattr(model, 'feature_importances_'):
+            importances = model.feature_importances_
+            # Limit to actual feature count
+            for i, importance in enumerate(importances[:len(feature_names)]):
+                feature_importance[feature_names[i]] = float(importance)
+            
+            model_info["feature_importance"] = feature_importance
+        
+        # For XGBoost model specifically
+        if hasattr(model, 'get_booster'):
+            try:
+                # This is XGBoost-specific
+                xgb_importance = model.get_booster().get_score(importance_type='weight')
+                model_info["xgb_feature_importance"] = xgb_importance
+            except Exception as e:
+                print(f"Error getting XGBoost feature importance: {e}", file=sys.stderr)
+        
+        # SARIMA model info if available
+        if sarima_model:
+            model_info["sarima_model_loaded"] = True
+            
+            # Add SARIMA parameters if available
+            try:
+                model_info["sarima_params"] = {
+                    "order": sarima_model.order,
+                    "seasonal_order": sarima_model.seasonal_order,
+                }
+            except Exception as e:
+                print(f"Error getting SARIMA parameters: {e}", file=sys.stderr)
+        else:
+            model_info["sarima_model_loaded"] = False
+
+        return jsonify({
+            "status": "ok",
+            "model_info": model_info
+        })
+
+    except Exception as e:
+        print(f"Error getting model info: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        return jsonify({
+            "status": "error",
+            "details": f"An error occurred while retrieving model information: {str(e)}"
+        }), 500
+
+
 @app.route('/status', methods=['GET'])
 def status():
     """
@@ -341,6 +425,105 @@ def reload_model():
         return jsonify({"error": f"Model or preprocessor file not found: {e}"}), 404
     except Exception as e:
         return jsonify({"error": f"Failed to reload models: {e}"}), 500
+
+
+@app.route('/shap_values', methods=['POST'])
+def get_shap_values():
+    """
+    Endpoint to calculate and return SHAP values for model explainability.
+    """
+    model = get_model()
+    preprocessor = get_preprocessor()
+    
+    if model is None or preprocessor is None:
+        return jsonify({
+            "status": "error",
+            "details": "Model or preprocessor not loaded"
+        }), 503
+    
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part in the request"}), 400
+        
+    file = request.files['file']
+    
+    if file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
+        
+    if file and file.filename.endswith('.csv'):
+        try:
+            # Read the CSV file
+            csv_data = io.BytesIO(file.read())
+            input_df = pd.read_csv(csv_data)
+            
+            # Limit to a reasonable number of rows for SHAP calculation
+            if len(input_df) > 100:
+                input_df = input_df.sample(100, random_state=42)
+            
+            # Preprocess the data
+            processed_features = preprocess_for_prediction(input_df, preprocessor)
+            
+            if processed_features.empty:
+                return jsonify({"error": "Preprocessing resulted in no valid features"}), 400
+            
+            # Try to import SHAP
+            try:
+                import shap
+            except ImportError:
+                return jsonify({
+                    "status": "error",
+                    "details": "SHAP library not installed on the server"
+                }), 503
+            
+            # Calculate SHAP values
+            if hasattr(model, 'predict_proba'):
+                # For classifiers
+                explainer = shap.TreeExplainer(model)
+                shap_values = explainer.shap_values(processed_features)
+                
+                # For multi-class, use the first class or expected value
+                if isinstance(shap_values, list):
+                    shap_values = shap_values[1] if len(shap_values) > 1 else shap_values[0]
+            else:
+                # For regressors
+                explainer = shap.TreeExplainer(model)
+                shap_values = explainer.shap_values(processed_features)
+            
+            # Get feature names
+            feature_names = processed_features.columns.tolist()
+            
+            # Convert SHAP values to a list of dictionaries for JSON serialization
+            shap_data = []
+            for i in range(len(processed_features)):
+                row_data = {
+                    "index": i,
+                    "base_value": float(explainer.expected_value) if not isinstance(explainer.expected_value, list) else float(explainer.expected_value[0]),
+                    "feature_values": {}
+                }
+                
+                for j, feature in enumerate(feature_names):
+                    row_data["feature_values"][feature] = {
+                        "value": float(processed_features.iloc[i, j]),
+                        "shap_value": float(shap_values[i, j])
+                    }
+                
+                shap_data.append(row_data)
+            
+            # Return the SHAP values
+            return jsonify({
+                "status": "ok",
+                "feature_names": feature_names,
+                "shap_data": shap_data
+            })
+            
+        except Exception as e:
+            print(f"Error calculating SHAP values: {e}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            return jsonify({
+                "status": "error",
+                "details": f"An error occurred while calculating SHAP values: {str(e)}"
+            }), 500
+    else:
+        return jsonify({"error": "File must be a CSV"}), 400
 
 
 # --- Main execution ---
