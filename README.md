@@ -1,106 +1,205 @@
-Sales Demand Forecasting MLOps Project
-Project Overview
-This project implements a robust Sales Demand Forecasting solution leveraging MLOps principles to ensure reproducibility, scalability, and efficient deployment. The primary objective is to accurately predict future sales revenue at both transactional and aggregated daily levels, providing valuable insights for business planning, inventory management, and marketing strategies.
-The project utilizes a modular architecture, separating concerns into distinct stages: data preprocessing, feature engineering, model training, model serving via a REST API, and a user-friendly web interface built with Streamlit. MLflow is integrated for experiment tracking and model management, while DVC is used for data and pipeline versioning, ensuring reproducibility across different environments.
-Features
+# **Sales Demand Forecasting MLOps Project**
 
-Data Preprocessing: Handles raw data loading, cleaning, outlier treatment, and initial feature transformations (e.g., one-hot encoding, scaling).
-Feature Engineering: Creates relevant time-series features (e.g., day of week, month, quarter, holidays) and potentially lag/rolling window features.
-Multiple Model Training:
-Transactional Models (e.g., Random Forest, XGBoost) for predicting individual transaction revenue.
-Time-Series Model (e.g., SARIMA) for predicting aggregated daily revenue trends.
+## **📌 Project Overview**
 
+This project implements a robust **Sales Demand Forecasting** solution leveraging **MLOps principles** to ensure **reproducibility**, **scalability**, and **efficient deployment**.
 
-MLflow Experiment Tracking: Logs training parameters, metrics (MAE, RMSE, R2), and model artifacts for comparison and management.
-DVC Versioning: Manages versions of data, models, and the entire pipeline, enabling reproducibility and collaboration.
-Flask REST API: Provides endpoints for real-time single transaction predictions, batch predictions via CSV upload, and time-series forecasts.
-Streamlit Web Application: Offers an interactive user interface for data visualization, making single/batch predictions, and viewing time-series forecasts.
-Model Monitoring (Basic): Includes a script to check model performance against a baseline (expandable for drift detection).
-Containerization (Planned): Designed with containerization in mind for consistent deployment environments.
+> The primary objective is to accurately predict future sales revenue at both transactional and aggregated daily levels, providing valuable insights for:
 
-Project Structure
+* **Business planning**
+* **Inventory management**
+* **Marketing strategies**
+
+### **Key Technologies**
+
+* Modular architecture
+* **MLflow** for experiment tracking
+* **DVC** for data & pipeline versioning
+* **Flask API** for model serving
+* **Streamlit** web interface for interaction
+
+---
+
+## **✨ Features**
+
+### **🧹 Data Preprocessing**
+
+* Raw data loading
+* Cleaning & outlier treatment
+* Initial transformations (e.g., **one-hot encoding**, **scaling**)
+
+### **🧠 Feature Engineering**
+
+* Time-based features: `day_of_week`, `month`, `quarter`, `holidays`
+* Optional: **Lag** and **rolling window** features
+
+### **🤖 Multiple Model Training**
+
+* **Transactional Models**: `Random Forest`, `XGBoost`
+* **Time-Series Model**: `SARIMA` for daily revenue trends
+
+### **📈 MLflow Experiment Tracking**
+
+* Logs **parameters**, **metrics** (`MAE`, `RMSE`, `R²`)
+* Stores **model artifacts**
+* Enables easy comparison between experiments
+
+### **🧮 DVC Versioning**
+
+* Tracks versions of **data**, **models**, and **pipeline**
+* Ensures reproducibility and team collaboration
+
+### **🌐 Flask REST API**
+
+* Endpoints:
+
+  * `POST /predict`: Single transaction prediction
+  * `POST /predict_batch_csv`: Batch prediction via CSV
+  * `POST /forecast_sarima`: Time-series forecast
+  * `GET /status`: API status check
+
+### **📊 Streamlit Web Application**
+
+* Interactive dashboard for:
+
+  * Data visualization
+  * Running predictions
+  * Viewing forecasts
+
+### **🧪 Model Monitoring (Basic)**
+
+* Script to compare model performance with baseline
+* Can be expanded for **drift detection**
+
+### **📦 Containerization (Planned)**
+
+* Designed for **Docker-based** deployment environments
+
+---
+
+## **📁 Project Structure**
+
+```
 ├── data/
-│   ├── processed/             # Processed data, daily aggregated data, monitoring reports
+│   ├── processed/             # Processed data, daily aggregated, monitoring reports
 │   └── synthetic/             # Raw synthetic data
 ├── models_initial/            # Trained models and preprocessor components
 ├── src/
-│   ├── api/                   # Flask API code (main.py, model_loader.py)
-│   ├── data_preprocessing.py  # Data preprocessing logic
-│   ├── feature_engineering.py # Feature engineering logic
-│   ├── evaluate.py            # Model evaluation logic
-│   ├── monitor.py             # Model monitoring script
-│   ├── predict_utils.py       # Prediction utility functions
-│   ├── streamlit_app/         # Streamlit application code (app.py)
-│   └── train.py               # Model training pipeline
-├── .dvcignore                 # DVC ignore file
-├── .gitignore                 # Git ignore file
-├── dvc.yaml                   # DVC pipeline definition
-├── MLproject                  # MLflow project definition
-├── requirements.txt           # Python dependencies
-├── conda.yaml                 # Conda environment definition
-└── README.md                  # Project README
+│   ├── api/                   # Flask API code
+│   ├── data_preprocessing.py
+│   ├── feature_engineering.py
+│   ├── evaluate.py
+│   ├── monitor.py
+│   ├── predict_utils.py
+│   ├── streamlit_app/         # Streamlit app
+│   └── train.py               # Training pipeline
+├── .dvcignore
+├── .gitignore
+├── dvc.yaml                   # DVC pipeline
+├── MLproject                  # MLflow config
+├── requirements.txt
+├── conda.yaml
+└── README.md
+```
 
-Setup
-To set up and run this project locally, follow these steps:
-Prerequisites
+---
 
-Python 3.8+
-Git
-Conda or venv (for environment management)
-Docker (optional, for containerized deployment)
+## **⚙️ Setup Instructions**
 
-1. Clone the Repository
+### **🔧 Prerequisites**
+
+* Python `3.8+`
+* Git
+* Conda or `venv`
+* Docker *(optional)*
+
+### **📥 1. Clone the Repository**
+
+```bash
 git clone <repository_url>
 cd sales-demand-forecasting-mlops
+```
 
-2. Set up Python Environment
-It is highly recommended to use a virtual environment.
-Using Conda:
+### **🐍 2. Set up Environment**
+
+#### Using Conda:
+
+```bash
 conda env create -f conda.yaml
 conda activate sales-forecasting-mlops
+```
 
-Using venv:
+#### Using venv:
+
+```bash
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+```
 
-3. Install DVC
-If DVC is not installed globally, install it in your virtual environment:
-pip install dvc[all]  # Installs DVC with support for various remotes
+### **📦 3. Install DVC**
 
-4. Initialize DVC and Reproduce the Pipeline
-Initialize DVC in the project root and run the pipeline defined in dvc.yaml. This will download/process data, engineer features, train models, and save artifacts.
-dvc init --no-scm  # Initialize DVC without linking to Git remote initially
+```bash
+pip install dvc[all]
+```
+
+### **▶️ 4. Initialize and Run DVC Pipeline**
+
+```bash
+dvc init --no-scm
 dvc repro
+```
 
-This command executes the preprocess and train stages defined in dvc.yaml. The processed data, preprocessor, trained models (RF, XGB, SARIMA), and daily aggregated data will be generated and versioned by DVC.
-5. Set up MLflow (Optional but Recommended)
-To view MLflow tracking logs, navigate to the project root and run:
+---
+
+## **📊 MLflow Tracking**
+
+### **Start MLflow UI:**
+
+```bash
 mlflow ui
+```
 
-The MLflow tracking UI will be accessible at http://localhost:5000.
-Usage
-Running the Flask API
-The Flask API serves the trained models for predictions. Using Waitress is recommended for production or Windows environments.
+> Accessible at: `http://localhost:5000`
+
+---
+
+## **🧪 Usage**
+
+### **Run Flask API**
+
+```bash
 waitress-serve --listen=0.0.0.0:5001 src.api.main:app
+```
 
-The API will be available at http://localhost:5001.
-Running the Streamlit App
-The Streamlit app provides a user interface to interact with the project.
+> Available at: `http://localhost:5001`
+
+---
+
+### **Run Streamlit App**
+
+```bash
 streamlit run src/streamlit_app/app.py
+```
 
-The app will open in your web browser, typically at http://localhost:8501. Ensure the Flask API is running before using the prediction functionalities in the app.
-Using the API Endpoints
-Once the Flask API is running, you can interact with it using tools like curl, Postman, or by making requests from your code.
+> Opens in browser: `http://localhost:8501`
 
-POST /predict: Single transaction prediction. Expects JSON input.
-POST /predict_batch_csv: Batch prediction. Expects CSV file upload.
-GET /status: Check API status and loaded models.
-POST /forecast_sarima: Time-series forecast. Expects JSON input with start_date and end_date.
+---
 
-Refer to src/api/main.py for detailed endpoint definitions and expected data formats.
-Running the Monitoring Script
-The monitoring script checks the performance of the deployed model against a baseline.
+### **API Endpoints Summary**
+
+| Endpoint             | Method | Description                        |
+| -------------------- | ------ | ---------------------------------- |
+| `/predict`           | POST   | Single transaction prediction      |
+| `/predict_batch_csv` | POST   | Upload CSV for batch predictions   |
+| `/forecast_sarima`   | POST   | Forecast revenue for a date range  |
+| `/status`            | GET    | Check API and model loading status |
+
+---
+
+### **Run Monitoring Script**
+
+```bash
 python src/monitor.py \
   --new_data_path data/processed/new_data_sample.csv \
   --model_path models_initial/best_random_forest_revenue_model.pkl \
@@ -108,39 +207,49 @@ python src/monitor.py \
   --baseline_metrics_path data/processed/baseline_metrics.json \
   --report_output_dir data/processed/performance_reports \
   --alert_log_path data/processed/monitoring_alerts.log
+```
 
-Adjust the parameters as needed for your new data and desired output locations.
-MLOps Components
-MLflow
-MLflow is used throughout the training process (src/train.py) to:
+---
 
-Track parameters used for each model run (hyperparameters, data split dates).
-Log evaluation metrics (MAE, RMSE, R2) on the test set.
-Store model artifacts (the trained .pkl files).
-Organize runs into experiments for easy comparison.
+## **⚙️ MLOps Components**
 
-Run mlflow ui in the project root to explore the experiment tracking results.
-DVC
-DVC is integrated to manage the lifecycle of data and models:
+### **🧭 MLflow**
 
-Data Versioning: dvc add is used (implicitly by dvc repro based on dvc.yaml) to version the raw and processed data files (.dvc files and cache).
-Pipeline Versioning: dvc.yaml defines the sequence of steps (preprocess, train) and their dependencies, making the entire pipeline reproducible with dvc repro.
-Model Versioning: Trained models are treated as data artifacts and versioned by DVC.
+* Logs **hyperparameters**, **metrics**, and **artifacts**
+* Organizes experiments for easy comparison
 
-This allows for tracking changes to data and code that affect model outputs and facilitates switching between different versions of the pipeline.
-Future Enhancements
+### **📂 DVC**
 
-Automated Monitoring: Implement scheduled monitoring checks and integrate with alerting systems (e.g., email, Slack).
-CI/CD Pipeline: Set up a CI/CD pipeline to automate testing, training, and deployment upon code changes.
-Containerization: Create Docker images for the Flask API and Streamlit app for easier deployment.
-Cloud Deployment: Deploy the API and Streamlit app to a cloud platform (AWS, GCP, Azure).
-Advanced Monitoring: Implement data drift and model drift detection.
-Model Registry: Utilize MLflow Model Registry for better model versioning and staging.
-Hyperparameter Tuning: Integrate hyperparameter tuning frameworks (e.g., Optuna, Hyperopt) with MLflow.
-More Sophisticated Models: Explore deep learning models or ensemble methods for forecasting.
-Unit and Integration Tests: Add comprehensive tests for code modules and API endpoints.
+* **Data Versioning**: `dvc add` and `.dvc` files
+* **Pipeline Versioning**: via `dvc.yaml`
+* **Model Versioning**: models as DVC-tracked artifacts
 
-License
-This project is licensed under the MIT License.
-Contact
-For questions or feedback, please open an issue on the GitHub repository.
+---
+
+## **🚀 Future Enhancements**
+
+* Automated Monitoring & Alerts (email, Slack)
+* CI/CD for training & deployment
+* Docker-based containerization
+* Cloud deployment (AWS, GCP, Azure)
+* Drift detection (data & model)
+* MLflow **Model Registry**
+* Hyperparameter tuning (Optuna, Hyperopt)
+* Deep learning models / Ensembles
+* Testing suite (unit + integration)
+
+---
+
+## **📝 License**
+
+This project is licensed under the **MIT License**.
+
+---
+
+## **📬 Contact**
+
+For issues or suggestions, please open an issue on the [GitHub repository](#).
+
+---
+
+
