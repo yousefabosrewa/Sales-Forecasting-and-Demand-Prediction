@@ -1,4 +1,4 @@
-# **Sales Demand Forecasting MLOps Project**
+# **Sales Forecasting and Demand Prediction Project**
 
 ## **📌 Project Overview**
 
