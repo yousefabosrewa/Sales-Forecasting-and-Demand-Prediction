@@ -117,7 +117,7 @@ This project implements a robust **Sales Demand Forecasting** solution leveragin
 
 ```bash
 git clone <repository_url>
-cd sales-demand-forecasting-mlops
+cd Sales-Forecasting-and-Demand-Prediction
 ```
 
 ### **🐍 2. Set up Environment**
@@ -126,7 +126,7 @@ cd sales-demand-forecasting-mlops
 
 ```bash
 conda env create -f conda.yaml
-conda activate sales-forecasting-mlops
+conda activate Sales-Forecasting-and-Demand-Prediction
 ```
 
 #### Using venv:
